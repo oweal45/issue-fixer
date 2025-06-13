@@ -4,6 +4,7 @@ import json
 from git import Repo
 import shutil
 import time
+import re
 from requests.exceptions import RequestException
 
 # ===== API CONFIGURATION =====
@@ -71,22 +72,20 @@ def ai_fix_code(issue):
         return FIX_CACHE[cache_key]
 
     prompt = f"""Generate a valid Git patch file to fix this GitHub issue. The patch MUST:
-    - Be in unified diff format.
-    - Include correct file paths relative to the repository root.
-    - Contain only the diff content (no explanations or extra text).
+    - Be in unified diff format with no extra text or code fences (e.g., ```diff).
+    - Use correct file paths relative to the repository root (e.g., README.md, src/main.py).
     - Apply cleanly to the repository's current state.
+    - Contain only the diff content, starting with '--- a/' and ending with the last change.
 
     Issue Title: {issue['title']}
     Issue Body: {issue['body']}
 
     Example patch:
-    ```diff
     --- a/README.md
     +++ b/README.md
     @@ -1,1 +1,1 @@
     -Helllo World
     +Hello World
-    ```
 
     Return ONLY the patch content:
     """
@@ -107,11 +106,16 @@ def ai_fix_code(issue):
             print(f"{api['name']} response: {response.status_code}")
             content = response.json()["choices"][0]["message"]["content"].strip()
             
-            # Log patch content for debugging
+            # Clean patch: remove code fences and extra text
+            content = re.sub(r'^```diff\n|```$', '', content, flags=re.MULTILINE).strip()
+            content = re.sub(r'^diff --git.*\n', '', content, flags=re.MULTILINE)
+            
+            # Log patch content
             print(f"Patch from {api['name']} for issue #{issue['number']}:\n{content[:500]}...")
             
-            # Validate patch format
-            if "--- a/" in content and "+++ b/" in content and "@@" in content:
+            # Validate patch
+            if ("--- a/" in content and "+++ b/" in content and "@@" in content and
+                not content.startswith("Here is") and len(content.splitlines()) >= 4):
                 FIX_CACHE[cache_key] = content
                 save_cache(FIX_CACHE)
                 return content
