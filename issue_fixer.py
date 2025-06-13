@@ -46,16 +46,16 @@ if not GH_TOKEN:
 # ===== AI FIX FUNCTION =====
 def ai_fix_code(issue):
     prompt = f"""Generate a valid Git patch file to fix this GitHub issue. The patch MUST:
-    - Be in unified diff format, starting with '--- a/' and ending with the last change.
-    - Use correct file paths relative to the repository root (e.g., README.md).
+    - Be a unified diff for ONE file only, starting with '--- a/' and ending with the last change.
+    - Use a correct file path relative to the repository root (e.g., README.md).
     - Apply cleanly to the repository's files.
-    - Contain ONLY the diff content (no explanations, no code fences like ```, no bash commands).
-    - Be complete and not cut off mid-line.
+    - Contain ONLY the diff content (no explanations, no code fences like ```, no bash/python code, no extra files).
+    - Fix simple issues like typos or small text changes.
 
     Issue Title: {issue['title']}
     Issue Body: {issue['body']}
 
-    Example patch for a typo fix:
+    Example patch for a typo:
     --- a/README.md
     +++ b/README.md
     @@ -1,1 +1,1 @@
@@ -79,21 +79,32 @@ def ai_fix_code(issue):
             )
             response.raise_for_status()
             print(f"{api['name']} response: {response.status_code}")
-            content = response.json()["choices"][0]["message"]["content"].strip()
+            raw_content = response.json()["choices"][0]["message"]["content"].strip()
             
-            # Clean patch: remove code fences, extra text, and invalid lines
-            content = re.sub(r'^```(diff)?\n|```$', '', content, flags=re.MULTILINE).strip()
-            content = re.sub(r'^diff --git.*\n|^index.*\n', '', content, flags=re.MULTILINE)
-            content = re.sub(r'```bash\n.*?\n```', '', content, flags=re.DOTALL)
-            content = '\n'.join(line for line in content.splitlines() if not line.startswith('#') and not line.startswith('```'))
+            # Log raw response
+            print(f"Raw response from {api['name']} for issue #{issue['number']}:\n{raw_content[:500]}...")
             
-            # Log patch content
-            print(f"Patch from {api['name']} for issue #{issue['number']}:\n{content[:500]}...")
+            # Clean patch
+            content = re.sub(r'^```(diff)?\n|```$', '', raw_content, flags=re.MULTILINE).strip()
+            content = re.sub(r'^diff --git.*\n|^index.*\n|^new file mode.*\n', '', content, flags=re.MULTILINE)
+            content = re.sub(r'```(bash|python)\n.*?\n```', '', content, flags=re.DOTALL)
+            content = re.sub(r'--- /dev/null\n', '', content)
+            content = '\n'.join(line for line in content.splitlines() 
+                              if not line.startswith(('#', 'Here is', 'Since', 'Let', 'Or', 'And')) 
+                              and not line.strip() in ('```', '') 
+                              and not re.match(r'--- a/.*\n.*\n--- a/', content, flags=re.DOTALL))
+            
+            # Log cleaned patch
+            print(f"Cleaned patch from {api['name']} for issue #{issue['number']}:\n{content[:500]}...")
             
             # Validate patch
-            if ("--- a/" in content and "+++ b/" in content and "@@" in content and
-                not content.startswith("Here is") and len(content.splitlines()) >= 4 and
-                not "```" in content and not "#" in content):
+            lines = content.splitlines()
+            if (len(lines) >= 4 and
+                any(line.startswith('--- a/') for line in lines) and
+                any(line.startswith('+++ b/') for line in lines) and
+                any(line.startswith('@@') for line in lines) and
+                not any(s in content for s in ['```', '#', 'Here is', 'new file mode', '--- /dev/null']) and
+                len([line for line in lines if line.startswith('--- a/')]) == 1):  # One file only
                 return content
             print(f"⚠️ Invalid patch format from {api['name']} for issue #{issue['number']}")
         except RequestException as e:
