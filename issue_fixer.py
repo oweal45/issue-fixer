@@ -13,7 +13,7 @@ API_CONFIGS = [
         "name": "together",
         "url": "https://api.together.xyz/v1/chat/completions",
         "headers": {"Authorization": f"Bearer {os.getenv('TOGETHER_KEY').strip()}", "Content-Type": "application/json"},
-        "payload": {"model": "mistralai/Mixtral-8x7B-Instruct-v0.1", "max_tokens": 1000}
+        "payload": {"model": "mistralai/Mixtral-8x7B-Instruct-v0.1", "max_tokens": 500}
     },
     {
         "name": "fireworks",
@@ -21,7 +21,7 @@ API_CONFIGS = [
         "headers": {"Authorization": f"Bearer {os.getenv('FIREWORKS_KEY').strip()}", "Content-Type": "application/json"},
         "payload": {
             "model": "accounts/fireworks/models/llama-v3p1-8b-instruct",
-            "max_tokens": 2000,
+            "max_tokens": 500,
             "temperature": 0.7,
             "top_p": 1
         }
@@ -30,7 +30,7 @@ API_CONFIGS = [
         "name": "mistral",
         "url": "https://api.mistral.ai/v1/chat/completions",
         "headers": {"Authorization": f"Bearer {os.getenv('MISTRAL_KEY').strip()}", "Content-Type": "application/json"},
-        "payload": {"model": "mistral-small", "max_tokens": 1000}
+        "payload": {"model": "mistral-small", "max_tokens": 500}
     }
 ]
 
@@ -46,16 +46,15 @@ if not GH_TOKEN:
 # ===== AI FIX FUNCTION =====
 def ai_fix_code(issue):
     prompt = f"""Generate a valid Git patch file to fix this GitHub issue. The patch MUST:
-    - Be a unified diff for ONE file only, starting with '--- a/' and ending with the last change.
-    - Use a correct file path relative to the repository root (e.g., README.md).
-    - Apply cleanly to the repository's files.
-    - Contain ONLY the diff content (no explanations, no code fences like ```, no bash/python code, no extra files).
-    - Fix simple issues like typos or small text changes.
+    - Be a unified diff for README.md ONLY, starting with '--- a/README.md' and ending with the last change.
+    - Contain ONLY the diff content (no code fences like ```, no bash/python code, no comments, no extra files).
+    - Fix a simple typo or text change in README.md.
+    - Apply cleanly to the repository's README.md.
 
     Issue Title: {issue['title']}
     Issue Body: {issue['body']}
 
-    Example patch for a typo:
+    Example patch:
     --- a/README.md
     +++ b/README.md
     @@ -1,1 +1,1 @@
@@ -85,12 +84,16 @@ def ai_fix_code(issue):
             print(f"Raw response from {api['name']} for issue #{issue['number']}:\n{raw_content[:500]}...")
             
             # Clean patch
-            content = re.sub(r'^```(diff)?\n|```$', '', raw_content, flags=re.MULTILINE).strip()
+            content = raw_content
+            if not content.startswith('--- a/README.md'):
+                content = re.sub(r'^--- a/.*?\n', '--- a/README.md\n', content, 1)
+                content = re.sub(r'^\+\+\+ b/.*?\n', '+++ b/README.md\n', content, 1)
+            content = re.sub(r'^```(diff)?\n|```$', '', content, flags=re.MULTILINE).strip()
             content = re.sub(r'^diff --git.*\n|^index.*\n|^new file mode.*\n', '', content, flags=re.MULTILINE)
-            content = re.sub(r'```(bash|python)\n.*?\n```', '', content, flags=re.DOTALL)
+            content = re.sub(r'```(bash|python|md)\n.*?\n```', '', content, flags=re.DOTALL)
             content = re.sub(r'--- /dev/null\n', '', content)
             content = '\n'.join(line for line in content.splitlines() 
-                              if not line.startswith(('#', 'Here is', 'Since', 'Let', 'Or', 'And')) 
+                              if not line.startswith(('#', 'Here is', 'Since', 'Let', 'Or', 'And', ':', '!')) 
                               and not line.strip() in ('```', '') 
                               and not re.match(r'--- a/.*\n.*\n--- a/', content, flags=re.DOTALL))
             
@@ -100,11 +103,11 @@ def ai_fix_code(issue):
             # Validate patch
             lines = content.splitlines()
             if (len(lines) >= 4 and
-                any(line.startswith('--- a/') for line in lines) and
-                any(line.startswith('+++ b/') for line in lines) and
+                lines[0].startswith('--- a/README.md') and
+                lines[1].startswith('+++ b/README.md') and
                 any(line.startswith('@@') for line in lines) and
-                not any(s in content for s in ['```', '#', 'Here is', 'new file mode', '--- /dev/null']) and
-                len([line for line in lines if line.startswith('--- a/')]) == 1):  # One file only
+                not any(s in content for s in ['```', '#', 'Here is', 'new file mode', '--- /dev/null', 'bash', 'python']) and
+                len([line for line in lines if line.startswith('--- a/')]) == 1):
                 return content
             print(f"⚠️ Invalid patch format from {api['name']} for issue #{issue['number']}")
         except RequestException as e:
