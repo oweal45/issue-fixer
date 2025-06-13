@@ -43,44 +43,19 @@ GH_TOKEN = os.getenv("GH_TOKEN")
 if not GH_TOKEN:
     raise ValueError("Missing GH_TOKEN environment variable")
 
-# ===== CACHING =====
-CACHE_FILE = "fix_cache.json"
-def load_cache():
-    try:
-        with open(CACHE_FILE, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-def save_cache(cache):
-    try:
-        with open(CACHE_FILE, "w") as f:
-            json.dump(cache, f, indent=2)
-    except Exception as e:
-        print(f"⚠️ Failed to save cache: {e}")
-
-# Clear cache to avoid invalid fixes
-if os.path.exists(CACHE_FILE):
-    os.remove(CACHE_FILE)
-FIX_CACHE = load_cache()
-
 # ===== AI FIX FUNCTION =====
 def ai_fix_code(issue):
-    cache_key = f"{issue['title']}-{issue['body'][:50]}"
-    if cache_key in FIX_CACHE:
-        print(f"Using cached fix for issue #{issue['number']}")
-        return FIX_CACHE[cache_key]
-
     prompt = f"""Generate a valid Git patch file to fix this GitHub issue. The patch MUST:
-    - Be in unified diff format with no extra text or code fences (e.g., ```diff).
-    - Use correct file paths relative to the repository root (e.g., README.md, src/main.py).
-    - Apply cleanly to the repository's current state.
-    - Contain only the diff content, starting with '--- a/' and ending with the last change.
+    - Be in unified diff format, starting with '--- a/' and ending with the last change.
+    - Use correct file paths relative to the repository root (e.g., README.md).
+    - Apply cleanly to the repository's files.
+    - Contain ONLY the diff content (no explanations, no code fences like ```, no bash commands).
+    - Be complete and not cut off mid-line.
 
     Issue Title: {issue['title']}
     Issue Body: {issue['body']}
 
-    Example patch:
+    Example patch for a typo fix:
     --- a/README.md
     +++ b/README.md
     @@ -1,1 +1,1 @@
@@ -106,18 +81,19 @@ def ai_fix_code(issue):
             print(f"{api['name']} response: {response.status_code}")
             content = response.json()["choices"][0]["message"]["content"].strip()
             
-            # Clean patch: remove code fences and extra text
-            content = re.sub(r'^```diff\n|```$', '', content, flags=re.MULTILINE).strip()
-            content = re.sub(r'^diff --git.*\n', '', content, flags=re.MULTILINE)
+            # Clean patch: remove code fences, extra text, and invalid lines
+            content = re.sub(r'^```(diff)?\n|```$', '', content, flags=re.MULTILINE).strip()
+            content = re.sub(r'^diff --git.*\n|^index.*\n', '', content, flags=re.MULTILINE)
+            content = re.sub(r'```bash\n.*?\n```', '', content, flags=re.DOTALL)
+            content = '\n'.join(line for line in content.splitlines() if not line.startswith('#') and not line.startswith('```'))
             
             # Log patch content
             print(f"Patch from {api['name']} for issue #{issue['number']}:\n{content[:500]}...")
             
             # Validate patch
             if ("--- a/" in content and "+++ b/" in content and "@@" in content and
-                not content.startswith("Here is") and len(content.splitlines()) >= 4):
-                FIX_CACHE[cache_key] = content
-                save_cache(FIX_CACHE)
+                not content.startswith("Here is") and len(content.splitlines()) >= 4 and
+                not "```" in content and not "#" in content):
                 return content
             print(f"⚠️ Invalid patch format from {api['name']} for issue #{issue['number']}")
         except RequestException as e:
