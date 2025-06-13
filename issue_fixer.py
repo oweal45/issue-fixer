@@ -58,6 +58,9 @@ def save_cache(cache):
     except Exception as e:
         print(f"⚠️ Failed to save cache: {e}")
 
+# Clear cache to avoid invalid fixes
+if os.path.exists(CACHE_FILE):
+    os.remove(CACHE_FILE)
 FIX_CACHE = load_cache()
 
 # ===== AI FIX FUNCTION =====
@@ -67,22 +70,25 @@ def ai_fix_code(issue):
         print(f"Using cached fix for issue #{issue['number']}")
         return FIX_CACHE[cache_key]
 
-    prompt = f"""Please generate a git patch file that fixes this GitHub issue:
-    
+    prompt = f"""Generate a valid Git patch file to fix this GitHub issue. The patch MUST:
+    - Be in unified diff format.
+    - Include correct file paths relative to the repository root.
+    - Contain only the diff content (no explanations or extra text).
+    - Apply cleanly to the repository's current state.
+
     Issue Title: {issue['title']}
     Issue Body: {issue['body']}
 
-    Return ONLY the patch file contents in unified diff format.
-    Example:
+    Example patch:
     ```diff
-    --- a/file.py
-    +++ b/file.py
-    @@ -1,5 +1,5 @@
-    -def buggy_code():
-    +def fixed_code():
+    --- a/README.md
+    +++ b/README.md
+    @@ -1,1 +1,1 @@
+    -Helllo World
+    +Hello World
     ```
 
-    Actual fix:
+    Return ONLY the patch content:
     """
 
     for api in API_CONFIGS:
@@ -99,10 +105,13 @@ def ai_fix_code(issue):
             )
             response.raise_for_status()
             print(f"{api['name']} response: {response.status_code}")
-            content = response.json()["choices"][0]["message"]["content"]
+            content = response.json()["choices"][0]["message"]["content"].strip()
+            
+            # Log patch content for debugging
+            print(f"Patch from {api['name']} for issue #{issue['number']}:\n{content[:500]}...")
             
             # Validate patch format
-            if "--- a/" in content and "+++ b/" in content:
+            if "--- a/" in content and "+++ b/" in content and "@@" in content:
                 FIX_CACHE[cache_key] = content
                 save_cache(FIX_CACHE)
                 return content
