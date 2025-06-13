@@ -11,26 +11,31 @@ API_CONFIGS = [
     {
         "name": "together",
         "url": "https://api.together.xyz/v1/chat/completions",
-        "key": os.getenv("TOGETHER_KEY"),
-        "payload": {"model": "mistralai/Mixtral-8x7B-Instruct-v0.1"}
+        "headers": {"Authorization": f"Bearer {os.getenv('TOGETHER_KEY').strip()}", "Content-Type": "application/json"},
+        "payload": {"model": "mistralai/Mixtral-8x7B-Instruct-v0.1", "max_tokens": 1000}
     },
     {
         "name": "fireworks",
         "url": "https://api.fireworks.ai/inference/v1/chat/completions",
-        "key": os.getenv("FIREWORKS_KEY"),
-        "payload": {"model": "accounts/fireworks/models/codellama-34b"}
+        "headers": {"Authorization": f"Bearer {os.getenv('FIREWORKS_KEY').strip()}", "Content-Type": "application/json"},
+        "payload": {
+            "model": "accounts/fireworks/models/llama-v3p1-8b-instruct",
+            "max_tokens": 2000,
+            "temperature": 0.7,
+            "top_p": 1
+        }
     },
     {
         "name": "mistral",
         "url": "https://api.mistral.ai/v1/chat/completions",
-        "key": os.getenv("MISTRAL_KEY"),
-        "payload": {"model": "mistral-small"}
+        "headers": {"Authorization": f"Bearer {os.getenv('MISTRAL_KEY').strip()}", "Content-Type": "application/json"},
+        "payload": {"model": "mistral-small", "max_tokens": 1000}
     }
 ]
 
-# Validate API keys
+# Validate API keys and GH_TOKEN
 for api in API_CONFIGS:
-    if not api["key"]:
+    if not os.getenv(api['name'].upper() + '_KEY'):
         raise ValueError(f"Missing API key for {api['name']}")
 
 GH_TOKEN = os.getenv("GH_TOKEN")
@@ -59,39 +64,55 @@ FIX_CACHE = load_cache()
 def ai_fix_code(issue):
     cache_key = f"{issue['title']}-{issue['body'][:50]}"
     if cache_key in FIX_CACHE:
+        print(f"Using cached fix for issue #{issue['number']}")
         return FIX_CACHE[cache_key]
 
-    prompt = f"""
-    Fix this GitHub issue (return ONLY a valid git patch):
-    Title: {issue['title']}
-    Description: {issue['body']}
+    prompt = f"""Please generate a git patch file that fixes this GitHub issue:
+    
+    Issue Title: {issue['title']}
+    Issue Body: {issue['body']}
+
+    Return ONLY the patch file contents in unified diff format.
+    Example:
+    ```diff
+    --- a/file.py
+    +++ b/file.py
+    @@ -1,5 +1,5 @@
+    -def buggy_code():
+    +def fixed_code():
+    ```
+
+    Actual fix:
     """
 
     for api in API_CONFIGS:
         try:
-            headers = {"Authorization": f"Bearer {api['key']}"}
+            print(f"Trying {api['name']} API for issue #{issue['number']}...")
             response = requests.post(
                 api["url"],
-                headers=headers,
-                json={**api["payload"], "messages": [{"role": "user", "content": prompt}]},
-                timeout=30
+                headers=api["headers"],
+                json={
+                    **api["payload"],
+                    "messages": [{"role": "user", "content": prompt}]
+                },
+                timeout=20
             )
             response.raise_for_status()
-            fix = response.json()["choices"][0]["message"]["content"]
+            print(f"{api['name']} response: {response.status_code}")
+            content = response.json()["choices"][0]["message"]["content"]
             
-            # Basic validation of fix
-            if not fix.strip() or len(fix) > 10000:
-                print(f"⚠️ Invalid fix from {api['name']}: Empty or too large")
-                continue
-                
-            FIX_CACHE[cache_key] = fix
-            save_cache(FIX_CACHE)
-            return fix
+            # Validate patch format
+            if "--- a/" in content and "+++ b/" in content:
+                FIX_CACHE[cache_key] = content
+                save_cache(FIX_CACHE)
+                return content
+            print(f"⚠️ Invalid patch format from {api['name']} for issue #{issue['number']}")
         except RequestException as e:
-            print(f"⚠️ {api['name']} failed: {e}")
+            print(f"⚠️ {api['name']} API error for issue #{issue['number']}: {str(e)[:200]}")
             time.sleep(2)
 
-    return "Failed to generate fix."
+    print(f"⚠️ No valid fix generated for issue #{issue['number']}")
+    return None
 
 # ===== GITHUB AUTOMATION =====
 def submit_fix(issue, fix):
@@ -103,21 +124,24 @@ def submit_fix(issue, fix):
         if os.path.exists(local_dir):
             shutil.rmtree(local_dir)
 
+        print(f"Cloning repo: https://github.com/{repo_url}.git for issue #{issue['number']}")
         repo = Repo.clone_from(f"https://x-access-token:{GH_TOKEN}@github.com/{repo_url}.git", local_dir)
         repo.git.checkout("-b", branch_name)
 
         with open(f"{local_dir}/fix.patch", "w") as f:
             f.write(fix)
 
+        print(f"Checking patch for issue #{issue['number']}")
         try:
             repo.git.execute(["git", "apply", "--check", "fix.patch"])
         except:
-            print(f"⚠️ Invalid patch for issue {issue['number']}")
+            print(f"⚠️ Invalid patch for issue #{issue['number']} during git apply")
             return None
 
         repo.git.execute(["git", "apply", "fix.patch"])
         repo.git.add(A=True)
         repo.git.commit(m=f"Fix: {issue['title']} (Issue #{issue['number']})")
+        print(f"Pushing branch {branch_name} for issue #{issue['number']}")
         repo.git.push("origin", branch_name)
 
         headers = {"Authorization": f"token {GH_TOKEN}"}
@@ -127,6 +151,7 @@ def submit_fix(issue, fix):
             "base": "main",
             "body": f"Automated fix for issue #{issue['number']}\n\n{fix[:500]}..."
         }
+        print(f"Creating pull request for {repo_url}")
         response = requests.post(
             f"https://api.github.com/repos/{repo_url}/pulls",
             headers=headers,
@@ -136,7 +161,7 @@ def submit_fix(issue, fix):
         return response.json()["html_url"]
 
     except Exception as e:
-        print(f"⚠️ Failed to submit fix for issue {issue['number']}: {e}")
+        print(f"⚠️ Failed to submit fix for issue #{issue['number']}: {str(e)[:200]}")
         return None
     finally:
         if os.path.exists(local_dir):
@@ -146,6 +171,7 @@ def submit_fix(issue, fix):
 if __name__ == "__main__":
     headers = {"Authorization": f"token {GH_TOKEN}"}
     try:
+        print("Fetching issues from GitHub")
         response = requests.get(
             "https://api.github.com/search/issues?q=label:good-first-issue+state:open",
             headers=headers,
@@ -153,11 +179,13 @@ if __name__ == "__main__":
         )
         response.raise_for_status()
         issues = response.json()["items"][:3]
+        print(f"Found {len(issues)} issues: {[issue['number'] for issue in issues]}")
 
         for issue in issues:
+            print(f"Processing issue #{issue['number']}: {issue['title']}")
             fix = ai_fix_code(issue)
-            if fix.startswith("Failed"):
-                print(f"⚠️ No fix generated for issue {issue['number']}")
+            if not fix:
+                print(f"⚠️ Skipping issue #{issue['number']} due to no valid fix")
                 continue
 
             pr_link = submit_fix(issue, fix)
@@ -167,4 +195,4 @@ if __name__ == "__main__":
                 print(f"⚠️ Failed to submit fix for issue #{issue['number']}")
 
     except RequestException as e:
-        print(f"⚠️ Failed to fetch issues: {e}")
+        print(f"⚠️ Failed to fetch issues: {str(e)[:200]}")
