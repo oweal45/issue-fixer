@@ -1,0 +1,31 @@
+name: Issue Fixer
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Runs daily at midnight UTC
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  fix-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests gitpython
+
+      - name: Run issue fixer script
+        env:
+          TOGETHER_KEY: ${{ secrets.TOGETHER_KEY }}
+          FIREWORKS_KEY: ${{ secrets.FIREWORKS_KEY }}
+          MISTRAL_KEY: ${{ secrets.MISTRAL_KEY }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: python issue_fixer.py
