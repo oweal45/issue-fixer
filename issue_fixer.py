@@ -180,7 +180,7 @@ if __name__ == "__main__":
     try:
         print("Fetching issues from GitHub")
         response = requests.get(
-            "https://api.github.com/search/issues?q=repo:your-username/test-issue-fixer+state:open",
+            "https://api.github.com/search/issues?q=repo:oweal45/test-issue-fixer+state:open",
             headers=headers,
             timeout=30
         )
