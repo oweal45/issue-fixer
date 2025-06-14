@@ -10,38 +10,27 @@ from requests.exceptions import RequestException
 # ===== API CONFIGURATION =====
 API_CONFIGS = [
     {
-        "name": "together",
-        "url": "https://api.together.xyz/v1/chat/completions",
-        "headers": {"Authorization": f"Bearer {os.getenv('TOGETHER_KEY').strip()}", "Content-Type": "application/json"},
-        "payload": {"model": "mistralai/Mixtral-8x7B-Instruct-v0.1", "max_tokens": 200}
-    },
-    {
-        "name": "fireworks",
-        "url": "https://api.fireworks.ai/inference/v1/chat/completions",
-        "headers": {"Authorization": f"Bearer {os.getenv('FIREWORKS_KEY').strip()}", "Content-Type": "application/json"},
+        "name": "grok",
+        "url": "https://api.x.ai/v1/chat/completions",
+        "headers": {
+            "Authorization": f"Bearer {os.getenv('GROK_KEY').strip()}",
+            "Content-Type": "application/json"
+        },
         "payload": {
-            "model": "accounts/fireworks/models/llama-v3p1-8b-instruct",
-            "max_tokens": 200,
-            "temperature": 0.7,
-            "top_p": 1
+            "model": "grok-3-latest",
+            "stream": False,
+            "temperature": 0,
+            "max_tokens": 200
         }
-    },
-    {
-        "name": "mistral",
-        "url": "https://api.mistral.ai/v1/chat/completions",
-        "headers": {"Authorization": f"Bearer {os.getenv('MISTRAL_KEY').strip()}", "Content-Type": "application/json"},
-        "payload": {"model": "mistral-small", "max_tokens": 200}
     }
 ]
 
-# Validate API keys and GH_TOKEN
-for api in API_CONFIGS:
-    if not os.getenv(api['name'].upper() + '_KEY'):
-        raise ValueError(f"Missing API key for {api['name']}")
-
+# Validate API key and GH_TOKEN
+if not os.getenv('GROK_KEY'):
+    raise ValueError("Missing GROK_KEY")
 GH_TOKEN = os.getenv("GH_TOKEN")
 if not GH_TOKEN:
-    raise ValueError("Missing GH_TOKEN environment variable")
+    raise ValueError("Missing GH_TOKEN")
 
 # ===== AI FIX FUNCTION =====
 def ai_fix_code(issue):
@@ -58,7 +47,7 @@ def ai_fix_code(issue):
     - Be a unified diff for README.md ONLY, starting with '--- a/README.md' and ending with the last change.
     - Use EXACTLY '--- a/README.md' and '+++ b/README.md' (three plus signs).
     - Contain ONLY the diff content (no ```, no bash/python code, no comments, no extra files).
-    - Fix a simple typo in README.md, replacing 'Helllo' with 'Hello'.
+    - Fix a simple typo in README.md, replacing 'Helllo World' with 'Hello World'.
     - Have valid line numbers (e.g., @@ -1,1 +1,1 @@).
 
     Issue Title: {issue['title']}
@@ -82,7 +71,10 @@ def ai_fix_code(issue):
                 headers=api["headers"],
                 json={
                     **api["payload"],
-                    "messages": [{"role": "user", "content": prompt}]
+                    "messages": [
+                        {"role": "system", "content": "You are a precise patch generator."},
+                        {"role": "user", "content": prompt}
+                    ]
                 },
                 timeout=20
             )
@@ -102,7 +94,7 @@ def ai_fix_code(issue):
             content = re.sub(r'^diff --git.*\n|^index.*\n|^new file mode.*\n', '', content, flags=re.MULTILINE)
             content = re.sub(r'```(bash|python|md)\n.*?\n```', '', content, flags=re.DOTALL)
             content = re.sub(r'--- /dev/null\n', '', content)
-            content = re.sub(r'\.\.\.$|\n.*?(Note|This|See).*', '', content, flags=re.DOTALL)  # Remove trailing ... and notes
+            content = re.sub(r'\.\.\.$|\n.*?(Note|This|See|Here).*', '', content, flags=re.DOTALL)  # Remove trailing ... and notes
             content = '\n'.join(line for line in content.splitlines() 
                               if not line.startswith(('#', 'Here is', 'Since', 'Let', 'Or', 'And', ':', '!')) 
                               and not line.strip() in ('```', '') 
@@ -117,8 +109,8 @@ def ai_fix_code(issue):
                 lines[0] == '--- a/README.md' and
                 lines[1] == '+++ b/README.md' and
                 re.match(r'@@ -\d+,\d+ \+\d+,\d+ @@', lines[2]) and
-                lines[3].startswith('-Helllo') and
-                lines[4].startswith('+Hello') and
+                lines[3].startswith('-Helllo World') and
+                lines[4].startswith('+Hello World') and
                 not any(s in content for s in ['```', '#', 'Here is', 'new file mode', '--- /dev/null', 'bash', 'python', '++++', '...'])):
                 return content
             print(f"⚠️ Invalid patch format from {api['name']} for issue #{issue['number']}")
@@ -188,7 +180,7 @@ if __name__ == "__main__":
     try:
         print("Fetching issues from GitHub")
         response = requests.get(
-            "https://api.github.com/search/issues?q=label:good-first-issue+state:open",
+            "https://api.github.com/search/issues?q=repo:your-username/test-issue-fixer+state:open",
             headers=headers,
             timeout=30
         )
