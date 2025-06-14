@@ -32,6 +32,30 @@ GH_TOKEN = os.getenv("GH_TOKEN")
 if not GH_TOKEN:
     raise ValueError("Missing GH_TOKEN")
 
+# ===== TEST GROK API =====
+def test_grok_api():
+    api = API_CONFIGS[0]
+    try:
+        print("Testing Grok API...")
+        response = requests.post(
+            api["url"],
+            headers=api["headers"],
+            json={
+                **api["payload"],
+                "messages": [
+                    {"role": "user", "content": "Say 'API test successful'"}
+                ]
+            },
+            timeout=10
+        )
+        response.raise_for_status()
+        result = response.json()["choices"][0]["message"]["content"].strip()
+        print(f"Grok API test response: {result}")
+        return "API test successful" in result
+    except RequestException as e:
+        print(f"⚠️ Grok API test failed: {str(e)[:200]}")
+        return False
+
 # ===== AI FIX FUNCTION =====
 def ai_fix_code(issue):
     # Force fallback for test issue to ensure success
@@ -177,15 +201,23 @@ def submit_fix(issue, fix):
 # ===== MAIN EXECUTION =====
 if __name__ == "__main__":
     headers = {"Authorization": f"token {GH_TOKEN}"}
+    # Test Grok API
+    if not test_grok_api():
+        print("⚠️ Exiting due to Grok API failure")
+        exit(1)
+
     try:
         print("Fetching issues from GitHub")
+        # Use direct repo issues endpoint
         response = requests.get(
-            "https://api.github.com/search/issues?q=repo:oweal45/test-issue-fixer+state:open",
+            "https://api.github.com/repos/oweal45/issue-fixer/issues?state=open&labels=good-first-issue",
             headers=headers,
             timeout=30
         )
-        response.raise_for_status()
-        issues = response.json()["items"][:3]
+        if response.status_code != 200:
+            print(f"⚠️ Failed to fetch issues: {response.status_code} {response.reason} - {response.text[:200]}")
+            exit(1)
+        issues = response.json()[:3]
         print(f"Found {len(issues)} issues: {[issue['number'] for issue in issues]}")
 
         for issue in issues:
@@ -203,3 +235,4 @@ if __name__ == "__main__":
 
     except RequestException as e:
         print(f"⚠️ Failed to fetch issues: {str(e)[:200]}")
+        exit(1)
